@@ -29,7 +29,9 @@ function setup_environment_variables()
 
   _userdata=$(curl http://169.254.169.254/latest/user-data/)
 
+  INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
   EIP_LIST=$(echo ${_userdata} | grep EIP_LIST)
+  LOCAL_IP_ADDRESS=$(curl -sq 169.254.169.254/latest/meta-data/public-ipv4/${ETH0_MAC}/public-ipv4s/)
 
   CWG=$(echo ${_userdata} | grep CLOUDWATCHGROUP | sed 's/CLOUDWATCHGROUP=//g')
 
@@ -47,7 +49,8 @@ function setup_environment_variables()
   chmod 770 /tmp/messages
   log_shadow_file_location="${bastion_mnt}/.${bastion_log}"
 
-  export REGION ETHO_MAC EIP_LIST CWG BASTION_MNT BASTION_LOG BASTION_LOGFILE BASTION_LOGFILE_SHADOW
+  export REGION ETHO_MAC EIP_LIST CWG BASTION_MNT BASTION_LOG BASTION_LOGFILE BASTION_LOGFILE_SHADOW \
+          LOCAL_IP_ADDRESS INSTANCE_ID
 }
 
 function usage () {
@@ -379,99 +382,68 @@ EOF
 }
 
 function request_eip() {
-    release=$(osrelease)
-    #Check if EIP already assigned.
-    ALLOC=1
-    ZERO=0
-    INSTANCE_IP=`ifconfig -a | grep inet | awk {'print $2'} | sed 's/addr://g' | head -1`
-    ASSIGNED=$(aws ec2 describe-addresses --region $REGION --output text | grep $INSTANCE_IP | wc -l)
-    if [ "$ASSIGNED" -gt "$ZERO" ]; then
-        echo "Already assigned an EIP."
-    else
-        aws ec2 describe-addresses --region $REGION --output text > /query.txt
-        #Ensure we are only using EIPs from our Stack
-        line=`curl http://169.254.169.254/latest/user-data/ | grep EIP_LIST`
-        IFS=$':' DIRS=(${line//$','/:})       # Replace tabs with colons.
 
-        for (( i=0 ; i<${#DIRS[@]} ; i++ )); do
-            EIP=`echo ${DIRS[i]} | sed 's/\"//g' | sed 's/EIP_LIST=//g'`
-            if [ $EIP != "Null" ]; then
-                #echo "$i: $EIP"
-                grep "$EIP" /query.txt >> /query2.txt;
-            fi
-        done
-        mv /query2.txt /query.txt
-
-
-        AVAILABLE_EIPs=`cat /query.txt | wc -l`
-
-        if [ "$AVAILABLE_EIPs" -gt "$ZERO" ]; then
-            FIELD_COUNT="5"
-            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-            echo "Running associate_eip_now"
-            while read name;
-            do
-                #EIP_ENTRY=$(echo $name | grep eip | wc -l)
-                EIP_ENTRY=$(echo $name | grep eni | wc -l)
-                echo "EIP: $EIP_ENTRY"
-                if [ "$EIP_ENTRY" -eq 1 ]; then
-                    echo "Already associated with an instance"
-                    echo ""
-                else
-                    export EIP=`echo "$name" | sed 's/[\s]+/,/g' | awk {'print $4'}`
-                    EIPALLOC=`echo $name | awk {'print $2'}`
-                    echo "NAME: $name"
-                    echo "EIP: $EIP"
-                    echo "EIPALLOC: $EIPALLOC"
-                    aws ec2 associate-address --instance-id $INSTANCE_ID --allocation-id $EIPALLOC --region $REGION
-                fi
-            done < /query.txt
-        else
-            echo "[ERROR] No Elastic IPs available in this region"
-            exit 1
-        fi
-
-        INSTANCE_IP=`ifconfig -a | grep inet | awk {'print $2'} | sed 's/addr://g' | head -1`
-        ASSIGNED=$(aws ec2 describe-addresses --region $REGION --output text | grep $INSTANCE_IP | wc -l)
-        if [ "$ASSIGNED" -eq 1 ]; then
-            echo "EIP successfully assigned."
-        else
-            #Retry
-            while [ "$ASSIGNED" -eq "$ZERO" ]
-            do
-                sleep 3
-                request_eip
-                INSTANCE_IP=`ifconfig -a | grep inet | awk {'print $2'} | sed 's/addr://g' | head -1`
-                ASSIGNED=$(aws ec2 describe-addresses --region $REGION --output text | grep $INSTANCE_IP | wc -l)
-            done
-        fi
+    # Is the already-assigned Public IP an elastic IP?
+    _query_assigned_public_ip
+    _determine_eip_assocation_status ${PUBLIC_IP_ADDRESS}
+    if [[ $? -ne 0 ]]; then
+      echo "The Public IP address associated with eth0 (${PUBLIC_IP_ADDRESS}) is already an Elastic IP. Not proceeding further."
+      exit 1
     fi
+    EIP_ARRAY=(${EIP_LIST//,/ })
+    _eip_assigned_count=0
 
+    for eip in ${EIP_ARRAY[@]}; do
+      # Determine if the EIP has already been assigned.
+      _determine_eip_assocation_status ${eip}
+      if [[ $? -eq 0 ]]; then
+        echo "Elastic IP [${eip}] already has an association. Moving on."
+        let _eip_assigned_count +=1
+        continue
+      fi
+
+      #TODO: Fix this.
+      eip_allocation=$(_determine_eip_allocation ${eip})
+
+      # Attempt to assign it to the ENI.
+      aws ec2 associate-address --instance-id ${INSTANCE_ID} --allocation-id ${eip_allocation} --region $REGION >/dev/null 2>&1
+      if [ $? -ne 0 ]; then
+        let _eip_assigned_count +=1
+        continue
+      else
+        break
+      fi
+
+      if [ "${_eip_assigned_count}" -eq "${#EIP_ARRAY[@]}" ]; then
+        echo "All of the stack EIPs have been assigned. I can't assign anything else. Exiting."
+        exit 1
+      fi
+
+    done
+    echo "The newly-assigned EIP is ${EIP}. It is mapped under EIP Allocation ${eip_allocation}"
     echo "${FUNCNAME[0]} Ended"
 }
 
-function _query_public_v4_ips() {
-  PUBLIC_IP_ADDRESS=$(curl 169.254.169.254/latest/meta-data/public-ipv4/${ETH0_MAC}/public-ipv4s/)
-  return PUBLIC_IP_ADDRESS
+function _query_assigned_public_ip() {
+  # Note: ETH0 Only.
+  # - Does not distinquish between EIP and Standard IP. Need to cross-ref later.
+  PUBLIC_IP_ADDRESS=$(curl -sq 169.254.169.254/latest/meta-data/public-ipv4/${ETH0_MAC}/public-ipv4s/)
 }
 
-function call_request_eip() {
-    ZERO=0
-    INSTANCE_IP=`ifconfig -a | grep inet | awk {'print $2'} | sed 's/addr://g' | head -1`
-    ASSIGNED=$(aws ec2 describe-addresses --region $REGION --output text | grep $INSTANCE_IP | wc -l)
-    if [ "$ASSIGNED" -gt 0 ]; then
-        echo "Already assigned an EIP."
-    else
-        WAIT=$(shuf -i 1-30 -n 1)
-        sleep "$WAIT"
-        request_eip
-    fi
-    echo "${FUNCNAME[0]} Ended"
+function _determine_eip_assocation_status(){
+  aws ec2 describe-addresses --public-ips ${1} --output text | grep -o -i eipassoc -q
+  if [[ $? -eq 0 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+function _determine_eip_allocation(){
+  eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text | egrep 'eipalloc-([a-z0-9]{8})' -o)
 }
 
 function prevent_process_snooping() {
     # Prevent bastion host users from viewing processes owned by other users.
-
     mount -o remount,rw,hidepid=2 /proc
     awk '!/proc/' /etc/fstab > temp && mv temp /etc/fstab
     echo "proc /proc proc defaults,hidepid=2 0 0" >> /etc/fstab
@@ -482,6 +454,7 @@ function prevent_process_snooping() {
 
 # Call checkos to ensure platform is Linux
 checkos
+# Assuming it is, setup environment variables.
 setup_environment_variables
 
 ## set an initial value
@@ -555,9 +528,7 @@ TCP_FORWARDING=`echo "$TCP_FORWARDING" | sed 's/\\n//g'`
 X11_FORWARDING=`echo "$X11_FORWARDING" | sed 's/\\n//g'`
 
 echo "Value of TCP_FORWARDING - $TCP_FORWARDING"
-
 echo "Value of X11_FORWARDING - $X11_FORWARDING"
-
 if [[ $TCP_FORWARDING == "false" ]];then
     awk '!/AllowTcpForwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config
     echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
@@ -588,6 +559,6 @@ else
 fi
 
 prevent_process_snooping
-call_request_eip
+request_eip
 
 echo "Bootstrap complete."
