@@ -20,8 +20,8 @@ function checkos () {
     echo "${FUNCNAME[0]} Ended"
 }
 
-function setup_environment_variables()
-  REGION=$(curl 169.254.169.254/latest/meta-data/placement/availability-zone/)
+function setup_environment_variables() {
+  REGION=$(curl -sq http://169.254.169.254/latest/meta-data/placement/availability-zone/)
     #ex: us-east-1a => us-east-1
   REGION=${REGION: :-1}
 
@@ -30,8 +30,9 @@ function setup_environment_variables()
   _userdata=$(curl http://169.254.169.254/latest/user-data/)
 
   INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-  EIP_LIST=$(echo ${_userdata} | grep EIP_LIST)
-  LOCAL_IP_ADDRESS=$(curl -sq 169.254.169.254/latest/meta-data/public-ipv4/${ETH0_MAC}/public-ipv4s/)
+  EIP_LIST=$(echo ${_userdata} | grep EIP_LIST | sed -e 's/EIP_LIST=//g' -e 's/\"//g')
+
+  LOCAL_IP_ADDRESS=$(curl -sq 169.254.169.254/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/local-ipv4s/)
 
   CWG=$(echo ${_userdata} | grep CLOUDWATCHGROUP | sed 's/CLOUDWATCHGROUP=//g')
 
@@ -386,7 +387,7 @@ function request_eip() {
     # Is the already-assigned Public IP an elastic IP?
     _query_assigned_public_ip
     _determine_eip_assocation_status ${PUBLIC_IP_ADDRESS}
-    if [[ $? -ne 0 ]]; then
+    if [[ $? -ne 1 ]]; then
       echo "The Public IP address associated with eth0 (${PUBLIC_IP_ADDRESS}) is already an Elastic IP. Not proceeding further."
       exit 1
     fi
@@ -398,29 +399,28 @@ function request_eip() {
       _determine_eip_assocation_status ${eip}
       if [[ $? -eq 0 ]]; then
         echo "Elastic IP [${eip}] already has an association. Moving on."
-        let _eip_assigned_count +=1
+        let _eip_assigned_count+=1
         continue
       fi
 
-      #TODO: Fix this.
-      eip_allocation=$(_determine_eip_allocation ${eip})
+      _determine_eip_allocation ${eip}
 
       # Attempt to assign it to the ENI.
-      aws ec2 associate-address --instance-id ${INSTANCE_ID} --allocation-id ${eip_allocation} --region $REGION >/dev/null 2>&1
+      aws ec2 associate-address --instance-id ${INSTANCE_ID} --allocation-id  ${eip_allocation} --region ${REGION}
       if [ $? -ne 0 ]; then
-        let _eip_assigned_count +=1
+        let _eip_assigned_count+=1
         continue
       else
+        echo "The newly-assigned EIP is ${eip}. It is mapped under EIP Allocation ${eip_allocation}"
         break
       fi
 
       if [ "${_eip_assigned_count}" -eq "${#EIP_ARRAY[@]}" ]; then
-        echo "All of the stack EIPs have been assigned. I can't assign anything else. Exiting."
+        echo "All of the stack EIPs have been assigned (${_eip_assigned_count}/${#EIP_ARRAY[@]}). I can't assign anything else. Exiting."
         exit 1
       fi
 
     done
-    echo "The newly-assigned EIP is ${EIP}. It is mapped under EIP Allocation ${eip_allocation}"
     echo "${FUNCNAME[0]} Ended"
 }
 
@@ -431,7 +431,7 @@ function _query_assigned_public_ip() {
 }
 
 function _determine_eip_assocation_status(){
-  aws ec2 describe-addresses --public-ips ${1} --output text | grep -o -i eipassoc -q
+  aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION} 2&> /dev/null | grep -o -i eipassoc -q
   if [[ $? -eq 0 ]]; then
     return 0
   fi
@@ -439,7 +439,7 @@ function _determine_eip_assocation_status(){
 }
 
 function _determine_eip_allocation(){
-  eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text | egrep 'eipalloc-([a-z0-9]{8})' -o)
+  eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION}| egrep 'eipalloc-([a-z0-9]{8})' -o)
 }
 
 function prevent_process_snooping() {
