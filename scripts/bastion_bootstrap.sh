@@ -14,10 +14,10 @@ function checkos () {
     if [[ "$unamestr" == 'Linux' ]]; then
         platform='linux'
     else
-        echo "[WARNING] This script is not supported on MacOS or freebsd"
+        log "[WARNING] This script is not supported on MacOS or freebsd"
         exit 1
     fi
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 function setup_environment_variables() {
@@ -54,7 +54,12 @@ function setup_environment_variables() {
           LOCAL_IP_ADDRESS INSTANCE_ID
 }
 
-function usage () {
+function log() {
+  echo `date +'%b %e %R '` "$@" >> ${BASTION_LOGFILE}
+  echo "$@" 
+}
+
+function usage() {
     echo "$0 <usage>"
     echo " "
     echo "options:"
@@ -68,9 +73,9 @@ function usage () {
 function chkstatus () {
     if [ $? -eq 0 ]
     then
-        echo "Script [PASS]"
+        log "Script [PASS]"
     else
-        echo "Script [FAILED]" >&2
+        log "Script [FAILED]" >&2
         exit 1
     fi
 }
@@ -78,13 +83,13 @@ function chkstatus () {
 function osrelease () {
     OS=`cat /etc/os-release | grep '^NAME=' |  tr -d \" | sed 's/\n//g' | sed 's/NAME=//g'`
     if [ "$OS" == "Ubuntu" ]; then
-        echo "Ubuntu"
+        log "Ubuntu"
     elif [ "$OS" == "Amazon Linux AMI" ]; then
-        echo "AMZN"
+        log "AMZN"
     elif [ "$OS" == "CentOS Linux" ]; then
-        echo "CentOS"
+        log "CentOS"
     else
-        echo "Operating System Not Found"
+        log "Operating System Not Found"
     fi
     echo "${FUNCNAME[0]} Ended" >> /var/log/cfn-init.log
 }
@@ -138,11 +143,11 @@ EOF
         semanage fcontext -a -t ssh_exec_t /usr/bin/bastion/shell
     fi
 
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 function amazon_os () {
-    echo "${FUNCNAME[0]} Started"
+    log "${FUNCNAME[0]} Started"
     chown root:ec2-user /usr/bin/script
     service sshd restart
     echo -e "\nDefaults env_keep += \"SSH_CLIENT\"" >>/etc/sudoers
@@ -199,7 +204,7 @@ cat <<'EOF' >> ~/mycron
 EOF
     crontab ~/mycron
     rm ~/mycron
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 function ubuntu_os () {
@@ -280,7 +285,7 @@ EOF
     echo "0 0 * * * unattended-upgrades -d" >> ~/mycron
     crontab ~/mycron
     rm ~/mycron
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 function cent_os () {
@@ -379,7 +384,7 @@ EOF
     echo "0 0 * * * yum -y update --security" > ~/mycron
     crontab ~/mycron
     rm ~/mycron
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 function request_eip() {
@@ -388,7 +393,7 @@ function request_eip() {
     _query_assigned_public_ip
     _determine_eip_assocation_status ${PUBLIC_IP_ADDRESS}
     if [[ $? -ne 1 ]]; then
-      echo "The Public IP address associated with eth0 (${PUBLIC_IP_ADDRESS}) is already an Elastic IP. Not proceeding further."
+      log "The Public IP address associated with eth0 (${PUBLIC_IP_ADDRESS}) is already an Elastic IP. Not proceeding further."
       exit 1
     fi
     EIP_ARRAY=(${EIP_LIST//,/ })
@@ -398,10 +403,10 @@ function request_eip() {
       # Determine if the EIP has already been assigned.
       _determine_eip_assocation_status ${eip}
       if [[ $? -eq 0 ]]; then
-        echo "Elastic IP [${eip}] already has an association. Moving on."
+        log "Elastic IP [${eip}] already has an association. Moving on."
         let _eip_assigned_count+=1
         if [ "${_eip_assigned_count}" -eq "${#EIP_ARRAY[@]}" ]; then
-          echo "All of the stack EIPs have been assigned (${_eip_assigned_count}/${#EIP_ARRAY[@]}). I can't assign anything else. Exiting."
+          log "All of the stack EIPs have been assigned (${_eip_assigned_count}/${#EIP_ARRAY[@]}). I can't assign anything else. Exiting."
           exit 1
         fi
         continue
@@ -415,11 +420,11 @@ function request_eip() {
         let _eip_assigned_count+=1
         continue
       else
-        echo "The newly-assigned EIP is ${eip}. It is mapped under EIP Allocation ${eip_allocation}"
+        log "The newly-assigned EIP is ${eip}. It is mapped under EIP Allocation ${eip_allocation}"
         break
       fi
     done
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 function _query_assigned_public_ip() {
@@ -445,7 +450,7 @@ function prevent_process_snooping() {
     mount -o remount,rw,hidepid=2 /proc
     awk '!/proc/' /etc/fstab > temp && mv temp /etc/fstab
     echo "proc /proc proc defaults,hidepid=2 0 0" >> /etc/fstab
-    echo "${FUNCNAME[0]} Ended"
+    log "${FUNCNAME[0]} Ended"
 }
 
 ##################################### End Function Definitions
@@ -463,7 +468,7 @@ TEMP=`getopt -o h:  --long help,banner:,enable:,tcp-forwarding:,x11-forwarding: 
 eval set -- "$TEMP"
 
 
-if [ $# == 1 ] ; then echo "No input provided! type ($0 --help) to see usage help" >&2 ; exit 1 ; fi
+if [ $# == 1 ] ; then log "No input provided! type ($0 --help) to see usage help" >&2 ; exit 1 ; fi
 
 # extract options and their arguments into variables.
 while true; do
@@ -501,22 +506,22 @@ done
 BANNER_FILE="/etc/ssh_banner"
 if [[ $ENABLE == "true" ]];then
     if [ -z ${BANNER_PATH} ];then
-        echo "BANNER_PATH is null skipping ..."
+        log "BANNER_PATH is null skipping ..."
     else
-        echo "BANNER_PATH = ${BANNER_PATH}"
-        echo "Creating Banner in ${BANNER_FILE}"
-        echo "curl  -s ${BANNER_PATH} > ${BANNER_FILE}"
+        log "BANNER_PATH = ${BANNER_PATH}"
+        log "Creating Banner in ${BANNER_FILE}"
+        log "curl  -s ${BANNER_PATH} > ${BANNER_FILE}"
         curl  -s ${BANNER_PATH} > ${BANNER_FILE}
         if [ $BANNER_FILE ] ;then
-            echo "[INFO] Installing banner ... "
+            log "[INFO] Installing banner ... "
             echo -e "\n Banner ${BANNER_FILE}" >>/etc/ssh/sshd_config
         else
-            echo "[INFO] banner file is not accessible skipping ..."
+            log "[INFO] banner file is not accessible skipping ..."
             exit 1;
         fi
     fi
 else
-    echo "Banner message is not enabled!"
+    log "Banner message is not enabled!"
 fi
 
 #Enable/Disable TCP forwarding
@@ -525,8 +530,8 @@ TCP_FORWARDING=`echo "$TCP_FORWARDING" | sed 's/\\n//g'`
 #Enable/Disable X11 forwarding
 X11_FORWARDING=`echo "$X11_FORWARDING" | sed 's/\\n//g'`
 
-echo "Value of TCP_FORWARDING - $TCP_FORWARDING"
-echo "Value of X11_FORWARDING - $X11_FORWARDING"
+log "Value of TCP_FORWARDING - $TCP_FORWARDING"
+log "Value of X11_FORWARDING - $X11_FORWARDING"
 if [[ $TCP_FORWARDING == "false" ]];then
     awk '!/AllowTcpForwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config
     echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
@@ -552,11 +557,11 @@ elif [ "$release" == "CentOS" ]; then
     #Call function for CentOS
     cent_os
 else
-    echo "[ERROR] Unsupported Linux Bastion OS"
+    log "[ERROR] Unsupported Linux Bastion OS"
     exit 1
 fi
 
 prevent_process_snooping
 request_eip
 
-echo "Bootstrap complete."
+log "Bootstrap complete."
