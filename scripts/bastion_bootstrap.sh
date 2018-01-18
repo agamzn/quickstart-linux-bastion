@@ -394,12 +394,16 @@ function request_eip() {
     EIP_ARRAY=(${EIP_LIST//,/ })
     _eip_assigned_count=0
 
-    for eip in ${EIP_ARRAY[@]}; do
+    for eip in "${EIP_ARRAY[@]}"; do
       # Determine if the EIP has already been assigned.
       _determine_eip_assocation_status ${eip}
       if [[ $? -eq 0 ]]; then
         echo "Elastic IP [${eip}] already has an association. Moving on."
         let _eip_assigned_count+=1
+        if [ "${_eip_assigned_count}" -eq "${#EIP_ARRAY[@]}" ]; then
+          echo "All of the stack EIPs have been assigned (${_eip_assigned_count}/${#EIP_ARRAY[@]}). I can't assign anything else. Exiting."
+          exit 1
+        fi
         continue
       fi
 
@@ -414,12 +418,6 @@ function request_eip() {
         echo "The newly-assigned EIP is ${eip}. It is mapped under EIP Allocation ${eip_allocation}"
         break
       fi
-
-      if [ "${_eip_assigned_count}" -eq "${#EIP_ARRAY[@]}" ]; then
-        echo "All of the stack EIPs have been assigned (${_eip_assigned_count}/${#EIP_ARRAY[@]}). I can't assign anything else. Exiting."
-        exit 1
-      fi
-
     done
     echo "${FUNCNAME[0]} Ended"
 }
@@ -431,7 +429,7 @@ function _query_assigned_public_ip() {
 }
 
 function _determine_eip_assocation_status(){
-  aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION} 2&> /dev/null | grep -o -i eipassoc -q
+  aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION}  | grep -o -i eipassoc -q
   if [[ $? -eq 0 ]]; then
     return 0
   fi
