@@ -794,7 +794,6 @@
                                 "pip install --upgrade pip &> /dev/null\n",
                                 "pip install awscli --ignore-installed six &> /dev/null\n",
                                 "easy_install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz\n",
-                                "until git clone https://github.com/aws-quickstart/quickstart-linux-utilities.git ; do echo \"Retrying\"; done\n",
                                 "EIP_LIST=\"",
                                 {
                                     "Ref": "EIP1"

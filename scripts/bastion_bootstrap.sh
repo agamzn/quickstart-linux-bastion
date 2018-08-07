@@ -17,7 +17,8 @@ function checkos () {
 
 function setup_environment_variables() {
     echo "${FUNCNAME[0]} Started"
-    . quickstart-linux-utils/quickstart-cfn-tools.source
+    git clone https://github.com/aws-quickstart/quickstart-linux-utilities.git  /tmp/qs-linux-utils
+    /tmp/qs-linux-utils/quickstart-cfn-tools.source
     _userdata_file="/var/lib/cloud/instance/user-data.txt"
     REGION=$(curl -sq http://169.254.169.254/latest/meta-data/placement/availability-zone/)
     # US-East-1a => US-East-1
@@ -35,6 +36,19 @@ function setup_environment_variables() {
     echo "${FUNCNAME[0]} Ended"
 }
 
+function install_package_if_needed(){
+    case "${os_release}" in 
+        AMZN|CentOS)
+            install_cmd="yum install -y"
+            ;;
+        Ubuntu)
+            install_cmd="apt-get install -y"
+            ;;
+    esac
+
+    ${install_cmd} ${1}
+}
+
 function verify_dependencies(){
     echo "${FUNCNAME[0]} Started"
 
@@ -43,6 +57,8 @@ function verify_dependencies(){
     fi
 
     mkdir -p /var/log/bastion
+
+    install_package_if_needed git
 
     echo "${FUNCNAME[0]} Ended"
 }
