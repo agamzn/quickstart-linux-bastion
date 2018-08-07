@@ -1,21 +1,13 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 # Bastion Bootstrapping
 # authors: tonynv@amazon.com, sancard@amazon.com, ianhill@amazon.com, andglenn@amazon.com
 # NOTE: This requires GNU getopt. On Mac OS X and FreeBSD you must install GNU getopt and mod the checkos function so that it's supported
-
-
-# Configuration
-PROGRAM='Linux Bastion'
 
 ##################################### Functions Definitions
 function checkos () {
     echo "${FUNCNAME[0]} Started"
 
-    platform='unknown'
-    unamestr=`uname`
-    if [[ "${unamestr}" == 'Linux' ]]; then
-        platform='linux'
-    else
+    if [[ "$(uname)" != 'Linux' ]]; then
         echo "[WARNING] This script is not supported on MacOS or freebsd"
         exit 1
     fi
@@ -25,12 +17,12 @@ function checkos () {
 
 function setup_environment_variables() {
     echo "${FUNCNAME[0]} Started"
-
+    . quickstart-linux-utils/quickstart-cfn-tools.source
     _userdata_file="/var/lib/cloud/instance/user-data.txt"
     REGION=$(curl -sq http://169.254.169.254/latest/meta-data/placement/availability-zone/)
     # US-East-1a => US-East-1
     REGION=${REGION: :-1}
-    ETH0_MAC=$(/sbin/ip link show dev eth0 | /bin/egrep -o -i 'link/ether\ ([0-9a-z]{2}:){5}[0-9a-z]{2}' | /bin/sed -e 's,link/ether\ ,,g')
+    ETH0_MAC=$(/sbin/ip link show dev eth0 | /bin/grep -E -o -i 'link/ether\ ([0-9a-z]{2}:){5}[0-9a-z]{2}' | /bin/sed -e 's,link/ether\ ,,g')
     INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
     EIP_LIST=$(grep EIP_LIST ${_userdata_file} | sed -e 's/EIP_LIST=//g' -e 's/\"//g')
 
@@ -47,8 +39,10 @@ function verify_dependencies(){
     echo "${FUNCNAME[0]} Started"
 
     if [[ "a$(which aws)" == "a" ]]; then
-    pip install awscli
+        pip install awscli
     fi
+
+    mkdir -p /var/log/bastion
 
     echo "${FUNCNAME[0]} Ended"
 }
@@ -79,7 +73,7 @@ function configure_bash_commands_to_syslog() {
            declare local_datetime
            command=${BASH_COMMAND}
            SSH_CONNECTING_IP=${SSH_CLIENT%% *}
-           local_datetime=$(`date "+%Y-%m-%d %H:%M:%S"`)
+           local_datetime=$(date "+%Y-%m-%d %H:%M:%S")
            logger -p local7.notice -t linux_bastion -i -- "${local_datetime}|${SSH_CONNECTING_IP}|${USER}|${PWD}|${command}"
         }
         trap log2syslog DEBUG
@@ -100,18 +94,18 @@ function chkstatus () {
 function osrelease () {
     echo "${FUNCNAME[0]} Started"
 
-    OS=`cat /etc/os-release | grep '^NAME=' |  tr -d \" | sed 's/\n//g' | sed 's/NAME=//g'`
+    OS=$(grep -E -i '^NAME' /etc/os-release | tr -d \" | sed -e 's/NAME=//g')
     if [ "${OS}" == "Ubuntu" ]; then
-        echo "Ubuntu"
+        export os_release="Ubuntu"
     elif [ "${OS}" == "Amazon Linux AMI" ] || [ "${OS}" == "Amazon Linux" ]; then
-        echo "AMZN"
+        export os_release="AMZN"
     elif [ "${OS}" == "CentOS Linux" ]; then
-        echo "CentOS"
+        export os_release="CentOS"
     else
-        echo "Operating System Not Found"
+        export os_release="NOTFOUND"
     fi
 
-    echo "${FUNCNAME[0]} Ended" >> /var/log/cfn-init.log
+    echo "${FUNCNAME[0]} Ended"
 }
 
 function harden_ssh_security () {
@@ -125,7 +119,7 @@ function harden_ssh_security () {
     echo -e "\nForceCommand /usr/bin/bastion/shell" >> /etc/ssh/sshd_config
 
 
-
+    mkdir -p /usr/bin/bastion
     cat <<-'EOF' >> /usr/bin/bastion/shell
     ## Check that the SSH client did not supply a command. Only SSH to instance should be allowed.
     export Allow_SSH="ssh"
@@ -149,8 +143,7 @@ EOF
     # Make the custom script executable
     chmod a+x /usr/bin/bastion/shell
 
-    release=$(osrelease)
-    if [ "${release}" == "CentOS" ]; then
+    if [ "${os_release}" == "CentOS" ]; then
         semanage fcontext -a -t ssh_exec_t /usr/bin/bastion/shell
     fi
 
@@ -173,7 +166,8 @@ function amazon_os () {
     qs_cloudwatch_tracklog /var/log/messages
 
     # Configuring bash commands to go to syslog.
-    configure_bash_commands_to_syslog
+    configure_bash_commands_to_syslog /etc/bashrc_commandlogging
+    echo ". /etc/bashrc_commandlogging" >> /etc/bashrc
 
 
     # Configure Security Updates.
@@ -291,9 +285,9 @@ function _determine_eip_assc_status(){
     rc=$?
     set -e
     if [[ ${rc} -eq 1 ]]; then
-    _eip_associated=1
+        _eip_associated=1
     else
-    _eip_associated=0
+        _eip_associated=0
     fi
 }
 
@@ -301,9 +295,9 @@ function _determine_eip_allocation(){
     echo "Determining EIP Allocation for [${1}]"
     resource_id_length=$(aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION} | awk {'print $2'} | sed 's/.*eipalloc-//')
     if [ "${#resource_id_length}" -eq 17 ]; then
-      eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION}| egrep 'eipalloc-([a-z0-9]{17})' -o)
+      eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION}| grep -E 'eipalloc-([a-z0-9]{17})' -o)
     else
-      eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION}| egrep 'eipalloc-([a-z0-9]{8})' -o)
+      eip_allocation=$(aws ec2 describe-addresses --public-ips ${1} --output text --region ${REGION}| grep -E 'eipalloc-([a-z0-9]{8})' -o)
     fi
 }
 
@@ -393,9 +387,27 @@ else
     echo "Banner message is not enabled!"
 fi
 
+
+osrelease
+case ${os_release} in
+    "Ubuntu")
+        ubuntu_os
+        ;;
+    "AMZN")
+        amazon_os
+        ;;
+    "CentOS")
+        cent_os
+        ;;
+    *)
+        echo "[ERROR] Unsupported Linux Bastion OS"
+        exit 1
+        ;;
+esac
+
 # Configure TCP and X11 forwarding variables.
-TCP_FORWARDING=`echo "${TCP_FORWARDING}" | sed 's/\\n//g'`
-X11_FORWARDING=`echo "${X11_FORWARDING}" | sed 's/\\n//g'`
+TCP_FORWARDING=$(echo "${TCP_FORWARDING}" | sed 's/\\n//g')
+X11_FORWARDING=$(echo "${X11_FORWARDING}" | sed 's/\\n//g')
 
 echo "Value of TCP_FORWARDING - ${TCP_FORWARDING}"
 echo "Value of X11_FORWARDING - ${X11_FORWARDING}"
@@ -411,21 +423,6 @@ if [[ ${X11_FORWARDING} == "false" ]];then
     echo "X11Forwarding no" >> /etc/ssh/sshd_config
 fi
 
-release=$(osrelease)
-
-# Ubuntu Linux
-if [ "${release}" == "Ubuntu" ]; then
-    ubuntu_os
-# AMZN Linux
-elif [ "${release}" == "AMZN" ]; then
-    amazon_os
-# CentOS Linux
-elif [ "${release}" == "CentOS" ]; then
-    cent_os
-else
-    echo "[ERROR] Unsupported Linux Bastion OS"
-    exit 1
-fi
 
 prevent_process_snooping
 request_eip
