@@ -12,6 +12,18 @@ function checkos () {
         exit 1
     fi
 
+    OS=$(grep -E -i '^NAME' /etc/os-release | tr -d \" | sed -e 's/NAME=//g')
+    if [ "${OS}" == "Ubuntu" ]; then
+        export os_release="Ubuntu"
+    elif [ "${OS}" == "Amazon Linux AMI" ] || [ "${OS}" == "Amazon Linux" ]; then
+        export os_release="AMZN"
+    elif [ "${OS}" == "CentOS Linux" ]; then
+        export os_release="CentOS"
+    else
+        export os_release="NOTFOUND"
+    fi
+
+
     echo "${FUNCNAME[0]} Ended"
 }
 
@@ -37,7 +49,7 @@ function setup_environment_variables() {
 }
 
 function install_package_if_needed(){
-    case "${os_release}" in 
+    case ${os_release} in 
         AMZN|CentOS)
             install_cmd="yum install -y"
             ;;
@@ -107,22 +119,6 @@ function chkstatus () {
     fi
 }
 
-function osrelease () {
-    echo "${FUNCNAME[0]} Started"
-
-    OS=$(grep -E -i '^NAME' /etc/os-release | tr -d \" | sed -e 's/NAME=//g')
-    if [ "${OS}" == "Ubuntu" ]; then
-        export os_release="Ubuntu"
-    elif [ "${OS}" == "Amazon Linux AMI" ] || [ "${OS}" == "Amazon Linux" ]; then
-        export os_release="AMZN"
-    elif [ "${OS}" == "CentOS Linux" ]; then
-        export os_release="CentOS"
-    else
-        export os_release="NOTFOUND"
-    fi
-
-    echo "${FUNCNAME[0]} Ended"
-}
 
 function harden_ssh_security () {
     echo "${FUNCNAME[0]} Started"
@@ -225,6 +221,7 @@ function cent_os () {
 }
 
 function request_eip() {
+    echo "${FUNCNAME[0]} Started"
 
     # Is the already-assigned Public IP an elastic IP?
     _query_assigned_public_ip
@@ -317,8 +314,28 @@ function _determine_eip_allocation(){
     fi
 }
 
-function prevent_process_snooping() {
+function launch_per_distro_functions(){
+    echo "${FUNCNAME[0]} Started"
+    case ${os_release} in
+        "Ubuntu")
+            ubuntu_os
+            ;;
+        "AMZN")
+            amazon_os
+            ;;
+        "CentOS")
+            cent_os
+            ;;
+        *)
+            echo "[ERROR] Unsupported Linux Bastion OS"
+            exit 1
+            ;;
+    esac
     echo "${FUNCNAME[0]} Ended"
+}
+
+function prevent_process_snooping() {
+    echo "${FUNCNAME[0]} Started"
 
     # Prevent bastion host users from viewing processes owned by other users.
     mount -o remount,rw,hidepid=2 /proc
@@ -328,9 +345,63 @@ function prevent_process_snooping() {
     echo "${FUNCNAME[0]} Ended"
 }
 
+function config_ssh_banner() {
+    echo "${FUNCNAME[0]} Started"
+
+    # Set an initial value.
+    SSH_BANNER="LINUX BASTION"
+
+    # BANNER CONFIGURATION
+    BANNER_FILE="/etc/ssh_banner"
+    if [[ ${ENABLE} == "true" ]];then
+        if [ -z ${BANNER_PATH} ];then
+            echo "BANNER_PATH is null skipping ..."
+        else
+            echo "BANNER_PATH = ${BANNER_PATH}"
+            echo "Creating Banner in ${BANNER_FILE}"
+            echo "curl  -s ${BANNER_PATH} > ${BANNER_FILE}"
+            curl  -s ${BANNER_PATH} > ${BANNER_FILE}
+            if [ ${BANNER_FILE} ] ;then
+                echo "[INFO] Installing banner ... "
+                echo -e "\n Banner ${BANNER_FILE}" >>/etc/ssh/sshd_config
+            else
+                echo "[INFO] banner file is not accessible skipping ..."
+                exit 1;
+            fi
+        fi
+    else
+        echo "Banner message is not enabled!"
+    fi
+    echo "${FUNCNAME[0]} Ended"
+}
+
+function configure_tcp_and_x11_forwarding(){
+    echo "${FUNCNAME[0]} Ended"
+
+    # Configure TCP and X11 forwarding variables.
+    TCP_FORWARDING=$(echo "${TCP_FORWARDING}" | sed 's/\\n//g')
+    X11_FORWARDING=$(echo "${X11_FORWARDING}" | sed 's/\\n//g')
+
+    echo "Value of TCP_FORWARDING - ${TCP_FORWARDING}"
+    echo "Value of X11_FORWARDING - ${X11_FORWARDING}"
+
+    if [[ ${TCP_FORWARDING} == "false" ]];then
+        awk '!/AllowTcpForwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config
+        echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
+        harden_ssh_security
+    fi
+
+    if [[ ${X11_FORWARDING} == "false" ]];then
+        awk '!/X11Forwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config
+        echo "X11Forwarding no" >> /etc/ssh/sshd_config
+    fi
+
+    echo "${FUNCNAME[0]} Ended"
+}
+
 ##################################### End Function Definitions
 
-# Ensure platform is Linux.
+# Ensure platform is Linux; configure ${os_release} variable. 
 checkos
 
 # Verify dependencies are installed.
@@ -339,108 +410,17 @@ verify_dependencies
 # Configure environment variables.
 setup_environment_variables
 
-# Set an initial value.
-SSH_BANNER="LINUX BASTION"
+# Per-distro stuff.
+launch_per_distro_functions
 
-# Read the options from cli input.
-TEMP=`getopt -o h:  --long help,banner:,enable:,tcp-forwarding:,x11-forwarding: -n $0 -- "$@"`
-eval set -- "${TEMP}"
+# Configure SSH Banner and TCP/X11 forwarding.
+configure_ssh_banner
+configure_tcp_and_x11_forwarding
 
-
-if [ $# == 1 ] ; then echo "No input provided! type ($0 --help) to see usage help" >&2 ; exit 1 ; fi
-
-# Extract options/variables into arguments.
-while true; do
-    case "$1" in
-        -h | --help)
-            usage
-            exit 1
-            ;;
-        --banner)
-            BANNER_PATH="$2";
-            shift 2
-            ;;
-        --enable)
-            ENABLE="$2";
-            shift 2
-            ;;
-        --tcp-forwarding)
-            TCP_FORWARDING="$2";
-            shift 2
-            ;;
-        --x11-forwarding)
-            X11_FORWARDING="$2";
-            shift 2
-            ;;
-        --)
-            break
-            ;;
-        *)
-            break
-            ;;
-    esac
-done
-
-# BANNER CONFIGURATION
-BANNER_FILE="/etc/ssh_banner"
-if [[ ${ENABLE} == "true" ]];then
-    if [ -z ${BANNER_PATH} ];then
-        echo "BANNER_PATH is null skipping ..."
-    else
-        echo "BANNER_PATH = ${BANNER_PATH}"
-        echo "Creating Banner in ${BANNER_FILE}"
-        echo "curl  -s ${BANNER_PATH} > ${BANNER_FILE}"
-        curl  -s ${BANNER_PATH} > ${BANNER_FILE}
-        if [ ${BANNER_FILE} ] ;then
-            echo "[INFO] Installing banner ... "
-            echo -e "\n Banner ${BANNER_FILE}" >>/etc/ssh/sshd_config
-        else
-            echo "[INFO] banner file is not accessible skipping ..."
-            exit 1;
-        fi
-    fi
-else
-    echo "Banner message is not enabled!"
-fi
-
-
-osrelease
-case ${os_release} in
-    "Ubuntu")
-        ubuntu_os
-        ;;
-    "AMZN")
-        amazon_os
-        ;;
-    "CentOS")
-        cent_os
-        ;;
-    *)
-        echo "[ERROR] Unsupported Linux Bastion OS"
-        exit 1
-        ;;
-esac
-
-# Configure TCP and X11 forwarding variables.
-TCP_FORWARDING=$(echo "${TCP_FORWARDING}" | sed 's/\\n//g')
-X11_FORWARDING=$(echo "${X11_FORWARDING}" | sed 's/\\n//g')
-
-echo "Value of TCP_FORWARDING - ${TCP_FORWARDING}"
-echo "Value of X11_FORWARDING - ${X11_FORWARDING}"
-
-if [[ ${TCP_FORWARDING} == "false" ]];then
-    awk '!/AllowTcpForwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config
-    echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
-    harden_ssh_security
-fi
-
-if [[ ${X11_FORWARDING} == "false" ]];then
-    awk '!/X11Forwarding/' /etc/ssh/sshd_config > temp && mv temp /etc/ssh/sshd_config
-    echo "X11Forwarding no" >> /etc/ssh/sshd_config
-fi
-
-
+# Prevent per-process snooping.
 prevent_process_snooping
+
+# Request an Elastic IP.
 request_eip
 
 echo "Bootstrap complete."
